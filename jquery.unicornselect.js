@@ -2,6 +2,23 @@
   var root = this; // window
   
   //
+  // Escape regular expression
+  //
+  var regExpEscape = function(text) {
+    if (!arguments.callee.sRE) {
+      var specials = [
+        '/', '.', '*', '+', '?', '|',
+        '(', ')', '[', ']', '{', '}', '\\'
+      ];
+      arguments.callee.sRE = new RegExp(
+        '(\\' + specials.join('|\\') + ')', 'g'
+      );
+    }
+    return text.replace(arguments.callee.sRE, '\\$1');
+  };
+  
+  
+  //
   // A helper for converting a selection into an object
   //
   if(!$.fn.getOptions) {
@@ -47,7 +64,7 @@
   //
   // The helper to create jQuery plugins
   //
-  function jQueryPluginFactory( $, name, methods, getters ){
+  function jQueryPluginFactory( $, name, methods, getters, apiObject ){
     getters = getters instanceof Array ? getters : [];
     var getters_obj = {};
     for(var i=0; i<getters.length; i++){
@@ -60,6 +77,39 @@
       this.element = element;
     };
     Plugin.prototype = methods;
+    
+    if( apiObject ) {
+      Plugin.prototype._createApiObject = function() {
+        var api = {};
+      
+        // add public methods
+        for(var m in this){
+          if(m.charAt(0) != '_' && typeof this[m] == 'function'){
+            api[m] = $.proxy( this, m );
+          }
+        };
+        
+        // create a data store method
+        api._data = {};
+        api.data = function( key, value ){
+          if( value === undefined ){
+            return this._data[key];
+          }
+          
+          if( value === null ){
+            delete this._data[key];
+          }
+          
+          this._data[key] = value;
+          return this._data[key];
+        }
+        
+        // attach the container element
+        api.element = this.element;
+        
+        return api;
+      }
+    }
     
     // Assign the plugin
     $.fn[name] = function(){
@@ -93,6 +143,16 @@
   };
   
   
+  // The currently showing
+  var currentlyShowing = null;
+
+  $(document).ready(function() {
+    $('body').on( 'click focus', function(event) {
+      if( currentlyShowing && $(event.target).closest('.unicorn-select').length == 0 ) {
+        currentlyShowing.toggle( false, event );
+      }
+    });
+  });
   
   //
   // Default options
@@ -100,9 +160,27 @@
   var defaultOptions = {
     itemFormatter: function(option) {
       return '<i class="status">&#x2713;</i> '+option;
+    },
+    
+    
+    
+    buildAdditionalControls: function( controlElement ) {
+      var search = $('<input type="search" />').appendTo(controlElement);
+      search.on('input change', $.proxy(function(event) {
+          this.search( $(event.target).val() );
+        }, this));
+        
+      var showAllButton = $('<a class="unicorn-select-all">Select all</a>').appendTo(controlElement)
+        .css('display', this.isMultiple() ? '' : 'hide')
+        .on('click', $.proxy(function( event ) {
+          this.selectAll( event );
+          return false; // Save the browser some time
+        }, this));
     }
   };
   
+  // Search regex
+  var searchKeyRegexp = /^\[(.*?)\]:/;
   
   
   //
@@ -119,8 +197,8 @@
       }
       
       // Options
-      this._options = defaultOptions;
-      $.extend(this._options, options || {html: true});
+      this._options = {};
+      $.extend(this._options, defaultOptions, options || {html: true});
       
       // populate various values
       if(!this._options.placeholder) {
@@ -136,7 +214,8 @@
       
       this._optionsVals = this.element.getOptions(); // Get the options vals
       
-      this._optionValueToElement = {}; // map a value to the element
+      this._optionValueToElement = {}; // map a value to our element
+      this._optionValueToOptionElement = {}; // map 
       
       // Create the HTML
       this._container = this.element.wrap('<div class="unicorn-select"></div>').parent();
@@ -147,7 +226,8 @@
         this._buttonToggle = $('<span class="unicorn-select-toggle">&#x25B2;</span>').appendTo(this._button);
       
       this._dropDown = $('<div class="unicorn-select-drop-down" style="display: none"></div>').appendTo(this._container);
-        this._dropDownAllButton = $('<a class="unicorn-select-all">Select all</a>').appendTo(this._dropDown).css('display', this._isMultiple? '' : 'hide');
+        this._additionalControls = $('<div class="unicorn-additional-controls"></div>').appendTo(this._dropDown);
+        this._options.buildAdditionalControls.call(this._createApiObject(), this._additionalControls);
         this._dropDownList = $('<ul></ul>').appendTo(this._dropDown);
       
       // populate the drop down items
@@ -171,8 +251,11 @@
       
       // Bind events
       this._button.on('click', $.proxy(this, '_buttonClick' ));
-      this._dropDownAllButton.on( 'click', $.proxy(this, '_allButtonClick'));
+      // this._dropDownAllButton.on( 'click', $.proxy(this, '_allButtonClick'));
       this._dropDownList.on( 'click', 'li', $.proxy(this, '_optionClick'));
+      
+      // Defer the reindex command
+      setTimeout( $.proxy(this, '_reindex'), 0);
     },
     
     
@@ -185,14 +268,6 @@
       return false; // Save the browser some time
     },
     
-    
-    /**
-     *
-     */
-    _allButtonClick: function( event ) {
-      this.selectAll( event );
-      return false; // Save the browser some time
-    },
     
     
     _optionClick: function( event ) {
@@ -209,7 +284,8 @@
       
       this._trigger( state? 'show' : 'hide', {}, originalEvent );
     },
-    
+
+
     
     
     /**
@@ -219,6 +295,11 @@
       this._container.addClass( 'unicorn-select-open' );
       this._isShowing = true;
       this._dropDown.css( 'display', '' );
+      
+      if(currentlyShowing) {
+        currentlyShowing.toggle( false, event );
+      }
+      currentlyShowing = this;
     },
     
     
@@ -229,6 +310,10 @@
       this._container.removeClass( 'unicorn-select-open' );
       this._isShowing = false;
       this._dropDown.css( 'display', 'none' );
+      
+      if(currentlyShowing == this) {
+        currentlyShowing = null;
+      }
     },
     
     
@@ -272,6 +357,14 @@
     _onenable: function( event, data ) {
       var val = data.value;
       this._optionValueToElement[val].removeClass('disabled');
+    },
+    
+    
+    /**
+     * Trigger the change event
+     */
+    _onchange: function( event, data ) {
+      this.element.trigger( 'change' );
     },
     
     
@@ -324,6 +417,9 @@
     enable: function( val, originalEvent ) {
       if( this._optionsVals[val] && this.isDisabled( val ) ) {
         this._optionsVals[val].disabled = false;
+        
+        this._optionAttr( val, 'disabled', false );
+        
         this._trigger( 'enable', {value: val}, originalEvent );
       }
     },
@@ -339,6 +435,8 @@
         if( this.isSelected( val ) ) {
           this.unselect( val );
         }
+        
+        this._optionAttr( val, 'disabled', true );
         
         this._trigger( 'disable', {value: val}, originalEvent );
       }
@@ -382,7 +480,10 @@
       }
       
       this._optionsVals[val].selected = true;
+      this._optionAttr( val, 'selected', true );
       this._trigger('select', {value: val}, originalEvent);
+      
+      this._trigger( 'change', {}, originalEvent );
     },
     
     
@@ -400,7 +501,10 @@
       this._val.splice(i, 1);
       this._optionsVals[val].selected = false;
       
+      this._optionAttr( val, 'selected', false );
       this._trigger('unselect', {value: val}, originalEvent);
+      
+      this._trigger( 'change', {}, originalEvent );
      },
      
      
@@ -420,11 +524,11 @@
     massUpdate: function( options ) {
       for(var val in options) {
         if( this._optionsVals[ val ] ) {
-          if( options[val].disabled == false ) {
+          if( options[val].disabled == true ) {
             this.disable( val );
           } else {
             this.enable( val );
-            if( options[val].selected != false ) {
+            if( options[val].selected == true ) {
               this.select( val );
             } else {
               this.unselect( val );
@@ -432,6 +536,9 @@
           }
         }
       }
+      
+      // Defer the reindex
+      setTimeout( $.proxy(this, '_reindex'), 0);
     },
     
     
@@ -446,6 +553,7 @@
       
       var oldVal = this._val;
       this._val = [];
+      var changed = false;
       
       for( var v in this._optionsVals ) {
         if( !this._optionsVals[v].disabled ) {
@@ -453,8 +561,13 @@
           
           if( oldVal.indexOf( v ) == -1 ) {
             this._trigger( 'select', {value: v}, event );
+            changed = true;
           }
         }
+      }
+      
+      if( changed ) {
+        this._trigger( 'change', {}, event );
       }
     },
     
@@ -464,6 +577,17 @@
      */
     toggleSelect: function( val, event ) {
       (this._val.indexOf( val ) == -1 ? this.select : this.unselect).call( this, val, event );
+    },
+    
+    
+    /**
+     *
+     */
+    _optionAttr: function( val, attrName, attrVal ) {
+      if( !this._optionValueToOptionElement[ val ] ) {
+        this._optionValueToOptionElement[ val ] = this.element.find('option[value="'+val+'"]');
+      }
+      this._optionValueToOptionElement[ val ].attr( attrName, attrVal );
     },
     
     
@@ -487,7 +611,85 @@
         }
       }
       
+      event.type = event.type = 'unicornselect' + event.type;
+      
       this.element.trigger( event, data );
+    },
+    
+    
+    /**
+     * Update search index
+     */
+    _reindex: function() {
+      var indexArr = [];
+      
+      for(var key in this._optionsVals) {
+        var options = this._optionsVals[ key ];
+        indexArr.push( '['+key+']:' +options.label );
+      }
+      
+      this._searchIndex = indexArr.join( "\n" );
+    },
+    
+    
+    
+    /**
+     * Private search
+     */
+    _search: function(text) {
+      // Get the options that match
+      text = regExpEscape(text).replace( /^\s+|\s+$/g, '' ).replace( /\s+/g, '|' );
+      var searchRegexp = new RegExp( '^\\[.+\\]:.*('+text+')', 'img' );
+      
+      var results = this._searchIndex.match( searchRegexp );
+      
+      if( results ) {
+        var keys = [];
+        
+        for( var i=0; i<results.length; ++i ) {
+          var keyMatch = results[i].match( searchKeyRegexp );
+          if( keyMatch ) {
+            keys.push( keyMatch[1] );
+          }
+        }
+        
+        return keys;
+      } 
+      
+      return [];
+    },
+    
+    
+    
+    /**
+     * Is multiple
+     */
+    isMultiple: function() {
+      return this._isMultiple;
+    },
+    
+    
+    
+    /**
+     * Search
+     */
+    search: function( text ) {
+      if( text ) {
+        var results = this._search( text );
+        this._dropDownList.addClass('unicorn-select-search-filtered');
+        
+        for( var key in this._optionValueToElement ) {
+          var li = this._optionValueToElement[key];
+          var included = results.indexOf(key) != -1;
+          li.toggleClass('search-exclude', !included).toggleClass('search-include', included);
+        }
+        
+      
+      // Canceled search
+      } else {
+        this._dropDownList.removeClass('unicorn-select-search-filtered');
+        this._dropDownList.children().removeClass('search-exclude').removeClass('search-include');
+      }
     }
   };
   
@@ -497,7 +699,7 @@
   
   
   // Create
-  jQueryPluginFactory( $, 'unicornSelect', methods, getters );
+  jQueryPluginFactory( $, 'unicornSelect', methods, getters, true );
   
 
 })(jQuery);
