@@ -158,12 +158,17 @@
   // Default options
   //
   var defaultOptions = {
+    /**
+     * Format each item
+     */
     itemFormatter: function(option) {
       return '<i class="status">&#x2713;</i> '+option;
     },
     
     
-    
+    /**
+     * Callback to build the additional controls
+     */
     buildAdditionalControls: function( controlElement ) {
       var search = $('<input type="search" />').appendTo(controlElement);
       search.on('input change', $.proxy(function(event) {
@@ -176,6 +181,22 @@
           this.selectAll( event );
           return false; // Save the browser some time
         }, this));
+    },
+    
+    
+    /**
+     * Callback for updating the count
+     */
+    buttonCountUpdate: function( element, count ) {
+      element.text( count );
+    },
+    
+    
+    /**
+     * Callback for laying out the options items
+     */
+    layoutOptionItems: function( listElement, optionsElements ) {
+      listElement.append( optionsElements );
     }
   };
   
@@ -223,7 +244,7 @@
       this._button = $('<div class="unicorn-select-button"></div>').appendTo(this._container);
         this._buttonCount = $('<span class="unicorn-select-count"></span>').appendTo(this._button);
         this._buttonLabel = $('<span class="unicorn-select-placeholder"></span>').text(this._options.placeholder).appendTo(this._button);
-        this._buttonToggle = $('<span class="unicorn-select-toggle">&#x25B2;</span>').appendTo(this._button);
+        this._buttonToggle = $('<span class="unicorn-select-toggle">'+(this._options.selectToggleText || '&#x25BE;')+'</span>').appendTo(this._button);
       
       this._dropDown = $('<div class="unicorn-select-drop-down" style="display: none"></div>').appendTo(this._container);
         this._additionalControls = $('<div class="unicorn-additional-controls"></div>').appendTo(this._dropDown);
@@ -231,31 +252,50 @@
         this._dropDownList = $('<ul></ul>').appendTo(this._dropDown);
       
       // populate the drop down items
+      var optionElements = [];
       for(var key in this._optionsVals) { 
         this._optionValueToElement[key] =
-          $('<li></li>').appendTo(this._dropDownList)
+          $('<li></li>')
             .toggleClass('selected', this._optionsVals[key].selected)
             .toggleClass('disabled', this._optionsVals[key].disabled)
             .data('value', this._optionsVals[key].value)
             .data('option', this._optionsVals[key])
             .html(this._options.itemFormatter(this._optionsVals[key]));
+          
+        optionElements.push( this._optionValueToElement[key].get(0) );
         
         if(this._optionsVals[key].selected && !this._optionsVals[key].disabled) {
           this._val.push(this._optionsVals[key].value);
         }
-        
+      }
+      
+      if( this._options.layoutOptionItems ) {
+        this._options.layoutOptionItems.call( this._createApiObject(), this._dropDownList, $(optionElements), this._dropDown );
       }
       
       // Show the selected amount
-      this._buttonCount.text(this._val.length);
+      this._updateCountElement();
+      
       
       // Bind events
       this._button.on('click', $.proxy(this, '_buttonClick' ));
-      // this._dropDownAllButton.on( 'click', $.proxy(this, '_allButtonClick'));
       this._dropDownList.on( 'click', 'li', $.proxy(this, '_optionClick'));
+      this._container.on( 'mouseleave', $.proxy(this, '_mouseOff'));
+      this._container.on( 'mouseenter', $.proxy(this, '_mouseOn'));
       
       // Defer the reindex command
       setTimeout( $.proxy(this, '_reindex'), 0);
+    },
+    
+    
+    
+    /**
+     * Update the count element
+     */
+    _updateCountElement: function() {
+      if( this._options.buttonCountUpdate ) {
+        this._options.buttonCountUpdate.call( this._createApiObject(), this._buttonCount, this._val.length );
+      }
     },
     
     
@@ -271,8 +311,7 @@
     
     
     _optionClick: function( event ) {
-    
-      var val = $(event.target).data('value');
+      var val = $(event.currentTarget).data('value');
       this.toggleSelect(val, event);
     },
     
@@ -282,9 +321,40 @@
     toggle: function( state, originalEvent ) {
       state = state === undefined ? !this._isShowing : state;
       
-      this._trigger( state? 'show' : 'hide', {}, originalEvent );
+      this._trigger( state? 'show' : 'hide', {dropDownElement: this._dropDown}, originalEvent );
     },
-
+    
+    
+    /**
+     *  Handles when the mouse moves off the open dropdown
+     */
+    _mouseOff: function(originalEvent) {
+      if( this._isShowing ) {
+        var opacity = this._dropDown.css('opacity');
+        if( isNaN(opacity) ) {
+          opacity = 1;  
+        }
+        
+        this._dropDown.stop()
+          .animate( {opacity: opacity*0.85}, 500, 'linear')
+          .animate( {opacity: 0}, 500, 'linear', $.proxy(function() {
+            this._dropDown.css('opacity', '');
+            this._trigger( 'hide', {dropDownElement: this._dropDown}, originalEvent );
+          }, this));
+      }
+    },
+    
+    
+    /**
+     * Handles when the mouse moves back on the open dropdown
+     */
+    _mouseOn: function() {
+      if( this._isShowing ) {
+        this._dropDown.stop().animate({opacity: 1}, 200, function() {
+          $(this).css('opacity', '');
+        });
+      }
+    },
 
     
     
@@ -294,7 +364,7 @@
     _onshow: function( event ) {
       this._container.addClass( 'unicorn-select-open' );
       this._isShowing = true;
-      this._dropDown.css( 'display', '' );
+      this._dropDown.stop().css( {display: '', opacity: ''} );
       
       if(currentlyShowing) {
         currentlyShowing.toggle( false, event );
@@ -309,7 +379,7 @@
     _onhide: function( event ) {
       this._container.removeClass( 'unicorn-select-open' );
       this._isShowing = false;
-      this._dropDown.css( 'display', 'none' );
+      this._dropDown.stop().css( {display: 'none', opacity: ''} );
       
       if(currentlyShowing == this) {
         currentlyShowing = null;
@@ -323,7 +393,7 @@
     _onselect: function( event, data ) {
       var val = data.value;
       
-      this._buttonCount.text(this._val.length);
+      this._updateCountElement();
       
       this._optionValueToElement[val].addClass('selected');
     },
@@ -335,7 +405,7 @@
     _onunselect: function( event, data ) {
       var val = data.value;
       
-      this._buttonCount.text(this._val.length);
+      this._updateCountElement();
       
       this._optionValueToElement[val].removeClass('selected');
     },
@@ -560,9 +630,34 @@
           this._val.push( v );
           
           if( oldVal.indexOf( v ) == -1 ) {
+            this._optionsVals[v].selected = true;
+            this._optionAttr( v, 'selected', true );
             this._trigger( 'select', {value: v}, event );
             changed = true;
           }
+        }
+      }
+      
+      if( changed ) {
+        this._trigger( 'change', {}, event );
+      }
+    },
+    
+    
+    /**
+     * Unselect all the options
+     */
+    unselectAll: function( event ) {
+      var oldVal = this._val;
+      this._val = [];
+      var changed = false;
+      
+      for( var v in this._optionsVals ) {
+        if( oldVal.indexOf( v ) >= 0 ) {
+          this._optionsVals[v].selected = false;
+          this._optionAttr( v, 'selected', false );
+          this._trigger( 'unselect', {value: v}, event );
+          changed = true;
         }
       }
       
@@ -674,7 +769,7 @@
      * Search
      */
     search: function( text ) {
-      if( text ) {
+      if( !!text ) {
         var results = this._search( text );
         this._dropDownList.addClass('unicorn-select-search-filtered');
         
@@ -688,7 +783,7 @@
       // Canceled search
       } else {
         this._dropDownList.removeClass('unicorn-select-search-filtered');
-        this._dropDownList.children().removeClass('search-exclude').removeClass('search-include');
+        this._dropDownList.find('li').removeClass('search-exclude').removeClass('search-include');
       }
     }
   };
